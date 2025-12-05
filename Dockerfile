@@ -14,6 +14,9 @@ RUN npm install
 # Copy source code
 COPY . .
 
+# Disable health check (node:20-slim doesn't have curl)
+HEALTHCHECK NONE
+
 # Expose API port
 EXPOSE 3001
 
