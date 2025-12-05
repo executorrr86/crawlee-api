@@ -1,5 +1,7 @@
 const express = require('express');
+const swaggerUi = require('swagger-ui-express');
 const { STEEL_BROWSER_URL } = require('./helpers/steel-session');
+const { generateSwaggerSpec } = require('./swagger');
 
 // Import routers
 const actorsRouter = require('./actors');
@@ -14,6 +16,18 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const VERSION = '3.0';
+
+// Swagger UI
+const swaggerSpec = generateSwaggerSpec();
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'Crawlee API Docs'
+}));
+
+// Swagger JSON
+app.get('/docs.json', (req, res) => {
+  res.json(swaggerSpec);
+});
 
 // Health check
 app.get('/health', (req, res) => {
@@ -38,7 +52,9 @@ app.get('/', (req, res) => {
   res.json({
     service: 'Crawlee API',
     version: VERSION,
+    documentation: '/docs',
     endpoints: {
+      docs: 'GET /docs - Swagger UI',
       health: 'GET /health',
       actors: 'GET /actors',
       runActor: 'POST /actors/:id',
@@ -54,5 +70,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Crawlee API v${VERSION} running on port ${PORT}`);
   console.log(`Steel Browser: ${STEEL_BROWSER_URL}`);
-  console.log(`Available endpoints: GET /`);
+  console.log(`Documentation: http://localhost:${PORT}/docs`);
 });
