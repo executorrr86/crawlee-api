@@ -1,10 +1,29 @@
 const express = require('express');
-const { PlaywrightCrawler, Dataset } = require('crawlee');
+const { PlaywrightCrawler } = require('crawlee');
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
+
+// Playwright config optimized for Docker
+const crawlerConfig = {
+  headless: true,
+  launchContext: {
+    launchOptions: {
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process'
+      ]
+    }
+  },
+  maxRequestsPerCrawl: 1,
+  requestHandlerTimeoutSecs: 60,
+  navigationTimeoutSecs: 30,
+};
 
 // Health check
 app.get('/health', (req, res) => {
@@ -21,37 +40,49 @@ app.post('/scrape', async (req, res) => {
     }
 
     const results = [];
+    let scrapeError = null;
     
     const crawler = new PlaywrightCrawler({
-      maxRequestsPerCrawl: 1,
+      ...crawlerConfig,
       async requestHandler({ page, request }) {
-        if (waitFor) {
-          await page.waitForSelector(waitFor, { timeout: 10000 }).catch(() => {});
-        }
-        
-        const data = { url: request.url };
-        
-        if (selectors) {
-          for (const [key, selector] of Object.entries(selectors)) {
-            const elements = await page.$$(selector);
-            data[key] = await Promise.all(
-              elements.map(el => el.textContent())
-            );
+        try {
+          if (waitFor) {
+            await page.waitForSelector(waitFor, { timeout: 10000 }).catch(() => {});
           }
-        } else {
-          // Default: extract title and all text
-          data.title = await page.title();
-          data.text = await page.$eval('body', el => el.innerText).catch(() => '');
+          
+          const data = { url: request.url };
+          
+          if (selectors) {
+            for (const [key, selector] of Object.entries(selectors)) {
+              const elements = await page.$$(selector);
+              data[key] = await Promise.all(
+                elements.map(el => el.textContent())
+              );
+            }
+          } else {
+            data.title = await page.title();
+            data.text = await page.$eval('body', el => el.innerText).catch(() => '');
+          }
+          
+          results.push(data);
+        } catch (err) {
+          scrapeError = err.message;
         }
-        
-        results.push(data);
       },
+      failedRequestHandler({ request, error }) {
+        scrapeError = error.message;
+      }
     });
 
     await crawler.run([url]);
     
+    if (scrapeError && results.length === 0) {
+      return res.status(500).json({ error: scrapeError });
+    }
+    
     res.json({ success: true, data: results[0] || {} });
   } catch (error) {
+    console.error('Scrape error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -68,9 +99,8 @@ app.post('/scrape/jobs', async (req, res) => {
     const jobs = [];
     
     const crawler = new PlaywrightCrawler({
-      maxRequestsPerCrawl: 1,
+      ...crawlerConfig,
       async requestHandler({ page }) {
-        // Wait for job listings to load
         await page.waitForTimeout(2000);
         
         const selector = jobSelector || '[class*="job"], [class*="listing"], [class*="result"], article';
@@ -85,7 +115,6 @@ app.post('/scrape/jobs', async (req, res) => {
               job[key] = el ? await el.textContent() : null;
             }
           } else {
-            // Default extraction
             job.title = await element.$eval('[class*="title"], h2, h3', el => el.textContent).catch(() => null);
             job.company = await element.$eval('[class*="company"], [class*="employer"]', el => el.textContent).catch(() => null);
             job.location = await element.$eval('[class*="location"]', el => el.textContent).catch(() => null);
@@ -103,6 +132,7 @@ app.post('/scrape/jobs', async (req, res) => {
     
     res.json({ success: true, count: jobs.length, jobs });
   } catch (error) {
+    console.error('Jobs scrape error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -119,7 +149,7 @@ app.post('/scrape/list', async (req, res) => {
     const items = [];
     
     const crawler = new PlaywrightCrawler({
-      maxRequestsPerCrawl: 1,
+      ...crawlerConfig,
       async requestHandler({ page }) {
         await page.waitForSelector(itemSelector, { timeout: 10000 }).catch(() => {});
         
@@ -153,6 +183,7 @@ app.post('/scrape/list', async (req, res) => {
     
     res.json({ success: true, count: items.length, items });
   } catch (error) {
+    console.error('List scrape error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -169,6 +200,7 @@ app.post('/crawl', async (req, res) => {
     const pages = [];
     
     const crawler = new PlaywrightCrawler({
+      ...crawlerConfig,
       maxRequestsPerCrawl: maxPages,
       async requestHandler({ page, request, enqueueLinks }) {
         const data = { url: request.url };
@@ -193,6 +225,7 @@ app.post('/crawl', async (req, res) => {
     
     res.json({ success: true, count: pages.length, pages });
   } catch (error) {
+    console.error('Crawl error:', error);
     res.status(500).json({ error: error.message });
   }
 });
