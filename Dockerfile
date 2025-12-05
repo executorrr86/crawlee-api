@@ -1,7 +1,7 @@
 FROM node:20-slim
 
-# Install curl for health checks and Playwright dependencies
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# Install curl for health checks and procps for Crawlee (needs 'ps' command)
+RUN apt-get update && apt-get install -y curl procps && rm -rf /var/lib/apt/lists/*
 
 # Install Playwright dependencies
 RUN npx playwright install --with-deps chromium
