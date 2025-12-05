@@ -1,5 +1,8 @@
 FROM node:20-slim
 
+# Install curl for health checks and Playwright dependencies
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Install Playwright dependencies
 RUN npx playwright install --with-deps chromium
 
@@ -14,8 +17,9 @@ RUN npm install
 # Copy source code
 COPY . .
 
-# Disable health check (node:20-slim doesn't have curl)
-HEALTHCHECK NONE
+# Health check using curl
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:3001/health || exit 1
 
 # Expose API port
 EXPOSE 3001
