@@ -40,6 +40,115 @@ async function releaseSteelSession(sessionId) {
   }
 }
 
+// ========================================
+// ACTORS - Pre-built scrapers for specific sites
+// ========================================
+
+// LinkedIn Jobs Actor
+app.post('/actors/linkedin-jobs', async (req, res) => {
+  let sessionId = null, browser = null;
+  
+  try {
+    const { keywords = '', location = '', limit = 25 } = req.body;
+    
+    // Build LinkedIn Jobs URL
+    const params = new URLSearchParams();
+    if (keywords) params.append('keywords', keywords);
+    if (location) params.append('location', location);
+    params.append('trk', 'public_jobs_jobs-search-bar_search-submit');
+    
+    const url = `https://www.linkedin.com/jobs/search?${params.toString()}`;
+    
+    const session = await createSteelSession();
+    browser = session.browser;
+    sessionId = session.sessionId;
+    
+    const context = browser.contexts()[0] || await browser.newContext();
+    const page = await context.newPage();
+    
+    console.log(`Scraping LinkedIn Jobs: ${url}`);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    
+    // Wait for job cards to load
+    await page.waitForSelector('.base-search-card, .job-search-card', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+    
+    // Extract jobs using LinkedIn's actual selectors
+    const jobs = await page.evaluate((maxJobs) => {
+      const jobCards = document.querySelectorAll('.base-search-card, .job-search-card, .base-card');
+      const results = [];
+      
+      for (let i = 0; i < Math.min(jobCards.length, maxJobs); i++) {
+        const card = jobCards[i];
+        
+        const titleEl = card.querySelector('.base-search-card__title, h3.base-search-card__title, .job-search-card__title');
+        const companyEl = card.querySelector('.base-search-card__subtitle, h4.base-search-card__subtitle, .job-search-card__subtitle');
+        const locationEl = card.querySelector('.job-search-card__location, .base-search-card__metadata');
+        const linkEl = card.querySelector('a.base-card__full-link, a');
+        const dateEl = card.querySelector('time, .job-search-card__listdate');
+        
+        const job = {
+          title: titleEl ? titleEl.textContent.trim() : null,
+          company: companyEl ? companyEl.textContent.trim() : null,
+          location: locationEl ? locationEl.textContent.trim() : null,
+          link: linkEl ? linkEl.href : null,
+          date: dateEl ? (dateEl.getAttribute('datetime') || dateEl.textContent.trim()) : null
+        };
+        
+        // Only add if we have at least a title
+        if (job.title) {
+          results.push(job);
+        }
+      }
+      
+      return results;
+    }, limit);
+    
+    await browser.close();
+    await releaseSteelSession(sessionId);
+    
+    res.json({ 
+      success: true, 
+      query: { keywords, location },
+      count: jobs.length, 
+      jobs 
+    });
+  } catch (error) {
+    console.error('LinkedIn Jobs error:', error);
+    if (browser) await browser.close().catch(() => {});
+    if (sessionId) await releaseSteelSession(sessionId);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List available actors
+app.get('/actors', (req, res) => {
+  res.json({
+    actors: [
+      {
+        id: 'linkedin-jobs',
+        name: 'LinkedIn Jobs Scraper',
+        endpoint: '/actors/linkedin-jobs',
+        method: 'POST',
+        params: {
+          keywords: 'Search keywords (e.g., "Software Engineer")',
+          location: 'Job location (e.g., "Spain")',
+          limit: 'Max results (default: 25)'
+        },
+        example: {
+          keywords: 'Software Engineer',
+          location: 'Spain',
+          limit: 10
+        }
+      }
+    ]
+  });
+});
+
+// ========================================
+// GENERIC SCRAPERS
+// ========================================
+
 // Generic scraper
 app.post('/scrape', async (req, res) => {
   let sessionId = null, browser = null;
@@ -238,6 +347,7 @@ app.post('/pdf', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Crawlee API v2.0 running on port ${PORT}`);
+  console.log(`Crawlee API v2.1 running on port ${PORT}`);
   console.log(`Steel Browser: ${STEEL_BROWSER_URL}`);
+  console.log(`Available actors: GET /actors`);
 });
