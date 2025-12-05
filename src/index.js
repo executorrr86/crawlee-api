@@ -1,5 +1,5 @@
 const express = require('express');
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-core');
 
 const app = express();
 app.use(express.json());
@@ -14,11 +14,10 @@ app.get('/health', (req, res) => {
 
 // Helper: Connect to Steel Browser and get a page
 async function createSteelSession() {
-  // Create session in Steel Browser
   const response = await fetch(`${STEEL_BROWSER_URL}/v1/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionTimeout: 300000 }) // 5 min timeout
+    body: JSON.stringify({ sessionTimeout: 300000 })
   });
   
   if (!response.ok) {
@@ -26,39 +25,29 @@ async function createSteelSession() {
   }
   
   const session = await response.json();
+  const wsUrl = `ws://${STEEL_BROWSER_URL.replace('http://', '').replace('https://', '')}/v1/sessions/${session.id}/cdp`;
   
-  // Connect Playwright to Steel Browser via CDP
-  const browser = await chromium.connectOverCDP(
-    `ws://${STEEL_BROWSER_URL.replace('http://', '')}/v1/sessions/${session.id}/cdp`
-  );
-  
+  const browser = await chromium.connectOverCDP(wsUrl);
   return { browser, sessionId: session.id };
 }
 
 // Helper: Release Steel session
 async function releaseSteelSession(sessionId) {
   try {
-    await fetch(`${STEEL_BROWSER_URL}/v1/sessions/${sessionId}/release`, {
-      method: 'POST'
-    });
+    await fetch(`${STEEL_BROWSER_URL}/v1/sessions/${sessionId}/release`, { method: 'POST' });
   } catch (e) {
     console.error('Failed to release session:', e.message);
   }
 }
 
-// Generic scraper - extracts based on selectors
+// Generic scraper
 app.post('/scrape', async (req, res) => {
-  let sessionId = null;
-  let browser = null;
+  let sessionId = null, browser = null;
   
   try {
     const { url, selectors, waitFor } = req.body;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
+    if (!url) return res.status(400).json({ error: 'URL is required' });
 
-    // Connect to Steel Browser
     const session = await createSteelSession();
     browser = session.browser;
     sessionId = session.sessionId;
@@ -67,19 +56,14 @@ app.post('/scrape', async (req, res) => {
     const page = await context.newPage();
     
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    
-    if (waitFor) {
-      await page.waitForSelector(waitFor, { timeout: 10000 }).catch(() => {});
-    }
+    if (waitFor) await page.waitForSelector(waitFor, { timeout: 10000 }).catch(() => {});
     
     const data = { url };
     
     if (selectors) {
       for (const [key, selector] of Object.entries(selectors)) {
         const elements = await page.$$(selector);
-        data[key] = await Promise.all(
-          elements.map(el => el.textContent())
-        );
+        data[key] = await Promise.all(elements.map(el => el.textContent()));
       }
     } else {
       data.title = await page.title();
@@ -88,7 +72,6 @@ app.post('/scrape', async (req, res) => {
     
     await browser.close();
     await releaseSteelSession(sessionId);
-    
     res.json({ success: true, data });
   } catch (error) {
     console.error('Scrape error:', error);
@@ -98,17 +81,13 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
-// Job scraper - specialized for job listings
+// Job scraper
 app.post('/scrape/jobs', async (req, res) => {
-  let sessionId = null;
-  let browser = null;
+  let sessionId = null, browser = null;
   
   try {
     const { url, jobSelector, fields } = req.body;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
+    if (!url) return res.status(400).json({ error: 'URL is required' });
 
     const session = await createSteelSession();
     browser = session.browser;
@@ -120,13 +99,12 @@ app.post('/scrape/jobs', async (req, res) => {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(2000);
     
-    const selector = jobSelector || '[class*="job"], [class*="listing"], [class*="result"], article';
+    const selector = jobSelector || '[class*="job"], [class*="listing"], article';
     const jobElements = await page.$$(selector);
-    
     const jobs = [];
+    
     for (const element of jobElements.slice(0, 50)) {
       const job = {};
-      
       if (fields) {
         for (const [key, sel] of Object.entries(fields)) {
           const el = await element.$(sel);
@@ -134,39 +112,31 @@ app.post('/scrape/jobs', async (req, res) => {
         }
       } else {
         job.title = await element.$eval('[class*="title"], h2, h3', el => el.textContent).catch(() => null);
-        job.company = await element.$eval('[class*="company"], [class*="employer"]', el => el.textContent).catch(() => null);
+        job.company = await element.$eval('[class*="company"]', el => el.textContent).catch(() => null);
         job.location = await element.$eval('[class*="location"]', el => el.textContent).catch(() => null);
         job.link = await element.$eval('a', el => el.href).catch(() => null);
       }
-      
-      if (Object.values(job).some(v => v)) {
-        jobs.push(job);
-      }
+      if (Object.values(job).some(v => v)) jobs.push(job);
     }
     
     await browser.close();
     await releaseSteelSession(sessionId);
-    
     res.json({ success: true, count: jobs.length, jobs });
   } catch (error) {
-    console.error('Jobs scrape error:', error);
+    console.error('Jobs error:', error);
     if (browser) await browser.close().catch(() => {});
     if (sessionId) await releaseSteelSession(sessionId);
     res.status(500).json({ error: error.message });
   }
 });
 
-// List scraper - extracts lists of items
+// List scraper
 app.post('/scrape/list', async (req, res) => {
-  let sessionId = null;
-  let browser = null;
+  let sessionId = null, browser = null;
   
   try {
     const { url, itemSelector, fields, maxItems = 100 } = req.body;
-    
-    if (!url || !itemSelector) {
-      return res.status(400).json({ error: 'URL and itemSelector are required' });
-    }
+    if (!url || !itemSelector) return res.status(400).json({ error: 'URL and itemSelector required' });
 
     const session = await createSteelSession();
     browser = session.browser;
@@ -183,49 +153,37 @@ app.post('/scrape/list', async (req, res) => {
     
     for (const element of elements.slice(0, maxItems)) {
       const item = {};
-      
       if (fields) {
         for (const [key, config] of Object.entries(fields)) {
           const sel = typeof config === 'string' ? config : config.selector;
           const attr = typeof config === 'object' ? config.attr : null;
-          
           const el = await element.$(sel);
-          if (el) {
-            item[key] = attr 
-              ? await el.getAttribute(attr)
-              : await el.textContent();
-          }
+          if (el) item[key] = attr ? await el.getAttribute(attr) : await el.textContent();
         }
       } else {
         item.text = await element.textContent();
       }
-      
       items.push(item);
     }
     
     await browser.close();
     await releaseSteelSession(sessionId);
-    
     res.json({ success: true, count: items.length, items });
   } catch (error) {
-    console.error('List scrape error:', error);
+    console.error('List error:', error);
     if (browser) await browser.close().catch(() => {});
     if (sessionId) await releaseSteelSession(sessionId);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Screenshot endpoint
+// Screenshot
 app.post('/screenshot', async (req, res) => {
-  let sessionId = null;
-  let browser = null;
+  let sessionId = null, browser = null;
   
   try {
     const { url, fullPage = false } = req.body;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
+    if (!url) return res.status(400).json({ error: 'URL is required' });
 
     const session = await createSteelSession();
     browser = session.browser;
@@ -233,14 +191,12 @@ app.post('/screenshot', async (req, res) => {
     
     const context = browser.contexts()[0] || await browser.newContext();
     const page = await context.newPage();
-    
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     
     const screenshot = await page.screenshot({ fullPage, type: 'png' });
     
     await browser.close();
     await releaseSteelSession(sessionId);
-    
     res.set('Content-Type', 'image/png');
     res.send(screenshot);
   } catch (error) {
@@ -251,17 +207,13 @@ app.post('/screenshot', async (req, res) => {
   }
 });
 
-// PDF endpoint
+// PDF
 app.post('/pdf', async (req, res) => {
-  let sessionId = null;
-  let browser = null;
+  let sessionId = null, browser = null;
   
   try {
     const { url } = req.body;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
-    }
+    if (!url) return res.status(400).json({ error: 'URL is required' });
 
     const session = await createSteelSession();
     browser = session.browser;
@@ -269,14 +221,12 @@ app.post('/pdf', async (req, res) => {
     
     const context = browser.contexts()[0] || await browser.newContext();
     const page = await context.newPage();
-    
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     
     const pdf = await page.pdf({ format: 'A4' });
     
     await browser.close();
     await releaseSteelSession(sessionId);
-    
     res.set('Content-Type', 'application/pdf');
     res.send(pdf);
   } catch (error) {
@@ -288,6 +238,6 @@ app.post('/pdf', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Crawlee API running on port ${PORT}`);
-  console.log(`Steel Browser URL: ${STEEL_BROWSER_URL}`);
+  console.log(`Crawlee API v2.0 running on port ${PORT}`);
+  console.log(`Steel Browser: ${STEEL_BROWSER_URL}`);
 });
